@@ -1,361 +1,213 @@
-# 🗑️ 渋谷区 ごみ情報データ基盤
+# 🗑️ 渋谷区 ごみ情報データ基盤 - エンタープライズDBサーバー & データパイプライン
 
-渋谷区の公式Webサイトおよび公開データをもとに、  
-ごみの品目、分別方法、収集地域などの情報を収集・整理・正規化し、  
-サービスで利用できるデータとして提供するためのデータ処理プロジェクトです。
+自治体（渋谷区）の公式Webサイトおよびオープンデータからごみ分別・収集情報を収集・正規化し、実サービスへ高信頼なデータを提供する**データパイプライン兼エン터プライズPostgreSQLデータベース基盤**です。
+
+Jsoupによるスクレイピング・抽出処理に加え、**Rocky Linux 8.9（VMware環境）上でのPostgreSQLサーバー構築、`pg_hba.conf`による接続・認証制御、4層スキーマ分離設計（Raw/Normalization/Master/Service）**を実装。将来的なAWS RDSへのクラウド移行を見据えたインフラ設計を採用しています。
+
+---
 
 ## 📌 プロジェクト概要
 
-自治体のごみに関する情報は、Webページ、PDF、CSV、APIなど、  
-さまざまな形式・データソースに分散しています。
+自治体のごみ分別情報は、Webページ、PDF、CSVなど多岐にわたる形式で分散しており、表記の揺らぎ（例：「燃やすごみ」「可燃ごみ」「燃えるごみ」）が存在します。
 
-本プロジェクトでは、これらのデータを収集し、  
-元データを保持した上でParserによるデータ抽出を行い、  
-正規化したデータをPostgreSQLに保存します。
+本プロジェクトでは、取得した元データ（Raw Data）の完全性を保持したままデータ抽出・マッピングを行い、正規化された標準データをPostgreSQL上に構築します。
 
-最終的には、ユーザーが自分の住所や地域を入力することで、  
-その地域に対応したごみの分別方法や収集情報を確認できる  
-「ごみの百科事典」サービスの構築を目指します。
+### 主要インフラ・アーキテクチャ特徴
+- **エンタープライズLinuxサーバー運用**: Rocky Linux 8.9環境におけるPostgreSQLインスタンスのチューニングおよびサービス運用
+- **セキュアなDBアクセス制御**: `pg_hba.conf`およびMD5認証による接続元IP制限・認証ポリシーの適用
+- **4段階スキーマ分離設計**: `raw` ➔ `normalization` ➔ `master` ➔ `service` によるデータ追跡性と再処理性の保証
+- **高信頼データパイプライン**: JsoupによるDOMパース、JSON中間保持、JPA/Hibernateを通じたトランザクション処理
+- **クラウドマイグレーション設計**: オンプレミス環境からAWS RDS（PostgreSQL）およびVPCプライベートサブネット構成への移行親和性
 
-## 🎯 主な目的
+---
 
-- 渋谷区の公式データの収集
-- Webページ / PDF / CSV / APIなど、複数形式のデータ処理
-- 取得した元データ（Raw Data）の保持
-- HTMLおよび文書データのParsing
-- データ表現の違いを吸収する正規化処理
-- ごみの種類や地域情報の標準化
-- データの変更・更新を追跡できる構造の構築
-- サービスで利用可能な標準データの作成
-- 将来的な他自治体への拡張を考慮したデータ構造の設計
+## 🖥️ インフラストラクチャ & ネットワーク構成
 
-## 🏗️ データ処理フロー
+本データ基盤は、データ収集・バッチ処理を行うアプリケーションノードと、永続化・クエリ処理を担うRocky Linux DBノードを分離・連携させています。
 
 ```text
-自治体・公開データ
-       │
-       ▼
-┌─────────────────┐
-│ Data Collection │
-│ Web / PDF / CSV │
-│ API             │
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│      Raw        │
-│ 元データの保持   │
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│     Parser      │
-│ HTML / PDFなど  │
-│ データ抽出       │
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│  Normalization  │
-│ データの標準化   │
-│ Mapping         │
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│ Master / Service│
-│ サービス用データ │
-└────────┬────────┘
-         ▼
-      ユーザーサービス
+[ Data Source (渋谷区 Web/OpenData) ]
+                   │
+                   │ HTTP / HTTPS (Jsoup Crawler)
+                   ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Application & Processing Node                              │
+│                                                             │
+│  - Spring / Spring Data JPA                                 │
+│  - Jsoup HTML Parser Engine                                 │
+│  - Data Mapping & Normalization Logic                       │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+                               │ TCP (Port 5432 / MD5 Auth)
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│  VMware Virtual Machine (Rocky Linux 8.9 : 192.168.0.250)   │
+│                                                             │
+│  [ OS & Network Interface ]                                 │
+│  - OS: Rocky Linux 8.9 (Green Obsidian)                     │
+│  - Interface: ens160 (192.168.0.250/24)                     │
+│                                                             │
+│  [ PostgreSQL Engine (Port: 5432) ]                         │
+│  - listen_addresses = '*'                                   │
+│  - Configuration: /var/lib/pgsql/data/pg_hba.conf           │
+│                                                             │
+│  ┌────────────────────────────────────────────────────────┐ │
+│  │ Database: garbage_db (4-Tier Schema)                   │ │
+│  │ ├── raw           : Raw Records & Import Batch         │ │
+│  │ ├── normalization : Field Mapping & Value Rules        │ │
+│  │ ├── master        : Unified Categories & Items         │ │
+│  │ └── service       : Service-ready Disposal Rules       │ │
+│  └────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-## 🗄️ Database Structure
+---
 
-PostgreSQLを使用し、データの処理段階ごとにSchemaを分離して管理しています。
+## ⚙️ インフラ環境 & 技術スタック
+
+| レイヤー | 採用技術・環境 | 役割・詳細 |
+|---|---|---|
+| **OS / Virtualization** | Rocky Linux 8.9 / VMware | RHEL互換エンタープライズOS、VMware仮想ネットワーク構成 |
+| **Network Interface** | `ens160` (192.168.0.250/24) | VMXNET3準拠の高速仮想ネットワークアダプター |
+| **Database Server** | PostgreSQL 13+ | リレーショナルデータ保管、スキーマ分離、トランザクション制御 |
+| **DB Access Control** | `pg_hba.conf` / MD5 | 接続元アドレス制御、クライアント認証の厳密化 |
+| **Backend & ORM** | Java, Spring Data JPA, Hibernate | データ永続化層の制御、エンティティマッピング |
+| **Data Processing** | Jsoup, JSON | 自治体HTMLテーブルのパース、非定型データのJSON中間化 |
+| **Build & Management**| Maven, Git / GitHub | ビルド自動化およびインフラ・スキーマ定義の構成管理 |
+
+---
+
+## 🔒 データベースセキュリティ & アクセス制御 (`pg_hba.conf`)
+
+PostgreSQLインスタンスへの不正アクセスを遮断し、安全なデータ通信を担保するため、`/var/lib/pgsql/data/pg_hba.conf`にて以下の認証・接続ポリシーを構成しています。
+
+```text
+# PostgreSQL Client Authentication Configuration (Excerpt)
+# TYPE  DATABASE        USER            ADDRESS                 METHOD
+local   all             all                                     md5
+host    all             all             127.0.0.1/32            md5
+host    all             all             0.0.0.0/0               md5
+host    all             all             ::1/128                 md5
+local   replication     all                                     peer
+host    replication     all             127.0.0.1/32            ident
+host    replication     all             ::1/128                 ident
+```
+- **listen_addresses**: 外部アプリケーションノードからの通信を受け付けるため `*` にバインド。
+- **暗号化パスワード認証**: すべてのTCP接続に対して`md5`パスワードハッシュ認証を強制。
+- **今後のアクセス制限強化**: 0.0.0.0/0（全開放）から、アプリケーションサーバーの固定IP（例: `192.168.0.25/32`）のみを許可するホワイトリスト制御へ順次移行。
+
+---
+
+## 🏗️ データ処理パイプライン概要
+
+```text
+自治体・公開データ (Web / HTML)
+       │
+       ▼
+┌─────────────────────────────────┐
+│ 1. Data Collection & Parsing    │ JsoupによるHTMLパース /
+│    (HTML Table ➔ JSON)          │ 要素抽出
+└────────────────┬────────────────┘
+                 ▼
+┌─────────────────────────────────┐
+│ 2. Raw Schema Storage           │ 元データ・取得バッチの
+│    (raw_record, import_batch)   │ 完全性を維持して保存
+└────────────────┬────────────────┘
+                 ▼
+┌─────────────────────────────────┐
+│ 3. Normalization Engine         │ フィールド統一・
+│    (field_mapping, mapping_rule)│ 表記揺らぎの標準化マッピング
+└────────────────┬────────────────┘
+                 ▼
+┌─────────────────────────────────┐
+│ 4. Master & Service Schema      │ サービス提供用
+│    (waste_category, item, rule) │ 最適化データの生成
+└────────────────┬────────────────┘
+                 ▼
+      ユーザー向け検索サービス
+```
+
+---
+
+## 🗄️ Database Schema Architecture (4層分離設計)
+
+データの更新や自治体ルールの変更が発生した場合でも、元データを保持したまま再処理（Reprocessing）が可能なアーキテクチャを採用しています。
 
 ```text
 garbage_db
 │
-├── raw
+├── raw             # 外部から取得した非加工データ
 │   ├── source
 │   ├── document
 │   ├── api_source
 │   ├── import_batch
 │   └── raw_record
 │
-├── master
+├── normalization   # データの標準化・マッピング定義
+│   ├── field_mapping
+│   └── mapping_rule
+│
+├── master          # サービス共通の基準マスター
 │   ├── waste_category
 │   ├── area
 │   └── item
 │
-├── normalization
-│   ├── field_mapping
-│   └── mapping_rule
-│
-└── service
+└── service         # サービス層から直接参照される提供用データ
     └── disposal_rule
 ```
 
-### Raw
+### 1. Raw 層
+外部から取得したデータを未加工の状態で保持・管理。
+- `source`: データ提供元の管理
+- `document`: 収集対象ドキュメントの管理
+- `import_batch`: バッチ処理単位の実行履歴管理
+- `raw_record`: パースされた元データのJSON保存
 
-外部から取得したデータを、処理前の段階で保持・管理します。
+### 2. Normalization 層
+自治体ごとに異なる表記揺らぎを標準定義に変換。
+```text
+燃やすごみ / 可燃ごみ / 燃えるごみ ──▶ BURNABLE
+ごみの品目 ──▶ item_name
+GIS搭載用住所 ──▶ gis_address
+```
 
-- `source` : データソースの管理
-- `document` : 取得対象となる文書の管理
-- `api_source` : APIデータソースの管理
-- `import_batch` : データ取得処理単位の管理
-- `raw_record` : Parserによって抽出された元データの保存
+### 3. Master 層 & Service 層
+サービス全体で統一された区分（`BURNABLE`, `RESOURCE` 等）を基に、最終的な排出ルールや収集スケジュールデータを構築。
 
-### Normalization
+---
 
-データソースごとに異なる表現を、サービスで利用できる共通形式に変換します。
+## 🔎 HTML Parsing & JPA Entity Mapping
 
-例えば、以下のような異なる表現を統一します。
+### HTML Parsing (Jsoup)
+```text
+HTML Table ──▶ Jsoup Node Select ──▶ JSON Object ──▶ Raw Entity ──▶ PostgreSQL
+```
+JsoupによりWebページのDOMツリーを走査し、`<tr>`, `<td>`タグから属性値を安全に抽出。構造化JSON形式に変換した上でDBへ投入します。
+
+### Spring Data JPA & Hibernate
+オブジェクト指向モデルとリレーショナルデータベースの整合性を維持し、トランザクション境界を管理。
+```text
+Spring Data JPA ──▶ Hibernate (SQL生成) ──▶ JDBC Driver ──▶ PostgreSQL (Port: 5432)
+```
+
+---
+
+## 🚀 クラウド移行ロード맵 (AWS Migration Roadmap)
+
+本オンプレミスデータ基盤をAWSクラウド環境へ段階的に移行する計画を策定しています。
 
 ```text
-燃やすごみ
-可燃ごみ
-燃えるごみ
-燃やすゴミ
-      │
-      ▼
-  BURNABLE
+[ Current: On-Premises ]             [ Target: AWS Cloud Architecture ]
+ Rocky Linux 8.9 (VMware)   ──────▶   Amazon VPC (Private Subnet)
+ PostgreSQL Instance                  └── Amazon RDS for PostgreSQL (Multi-AZ)
+ App Batch Worker                     └── AWS ECS / Fargate (Containerized Worker)
+ Local Security Control               └── AWS Security Group (Port 5432 Restricted)
 ```
 
-`mapping_rule`を使用して、元データの値と標準化された値をマッピングします。
-
-また、`field_mapping`を使用して、データソースごとに異なるフィールド名を共通フィールド名へ変換します。
-
-```text
-ごみの品目     → item_name
-インデックス   → item_index
-説明           → description
-GIS搭載用住所 → gis_address
-```
-
-### Master
-
-サービス全体で共通して使用する基準データを管理します。
-
-例：
-
-```text
-BURNABLE
-NON_BURNABLE
-RESOURCE
-OVERSIZED
-```
-
-### Service
-
-正規化されたデータをもとに、実際のサービスで利用する情報を管理します。
-
-例：
-
-```text
-可燃ごみとして出してください
-        ↓
-    BURNABLE
-        ↓
-収集可否・排出ルール
-```
-
-## 🔎 HTML Parsing
-
-Webページ形式のデータについては、JavaのHTML Parserである **Jsoup** を使用して処理します。
-
-```text
-HTML
- │
- ▼
-Jsoup
- │
- ▼
-HTML DOM
- │
- ├── <table>
- │     └── <tr>
- │           ├── <td>
- │           └── <td>
- │
- ▼
-必要なElementを抽出
- │
- ▼
-JSON
- │
- ▼
-Raw Data
-```
-
-Jsoupを使用してHTMLをDOM構造として解析し、`<tr>`や`<td>`などのElementを検索・取得します。
-
-Parserでは、取得したデータをプロジェクトで定義したフィールド構造に合わせてJSON形式に変換します。
-
-## 🧩 Technology Stack
-
-### Backend
-
-- Java
-- Spring
-- Spring Data JPA
-- Hibernate
-
-### Database
-
-- PostgreSQL
-
-### Data Processing
-
-- Jsoup
-- JSON
-- PDF / CSV / API Data Processing
-
-### Development
-
-- Eclipse
-- Maven
-- Git / GitHub
-
-## 🔄 JPA & Hibernate
-
-本プロジェクトでは、Spring Data JPAを使用してデータベースを操作しています。
-
-```text
-Spring Data JPA
-       │
-       ▼
-      JPA
-   （標準仕様）
-       │
-       ▼
-   Hibernate
-   （実装）
-       │
-       ▼
-  PostgreSQL
-```
-
-JPAはJavaオブジェクトとデータベースを連携するための標準仕様を提供し、  
-Hibernateがその仕様を実装して、SQLの生成やデータベースとの通信を行います。
-
-## 📊 Data Processing Example
-
-取得した元データ：
-
-```text
-ごみの品目 = 燃やすごみ
-説明 = 可燃ごみとして出してください
-GIS搭載用住所 = 渋谷区渋谷1丁目
-```
-
-### 1. Raw Data
-
-取得した元データをJSON形式で保持します。
-
-```json
-{
-  "ごみの品目": "燃やすごみ",
-  "説明": "可燃ごみとして出してください",
-  "GIS搭載用住所": "渋谷区渋谷1丁目"
-}
-```
-
-### 2. Field Mapping
-
-```text
-ごみの品目
-    ↓
-item_name
-
-説明
-    ↓
-description
-
-GIS搭載用住所
-    ↓
-gis_address
-```
-
-### 3. Value Mapping
-
-```text
-燃やすごみ
-    ↓
-BURNABLE
-```
-
-### 4. Master / Service
-
-標準化されたデータをもとに、サービスで利用するごみの種類や排出ルールを生成します。
-
-## 🔐 Raw Dataと正規化データの分離
-
-本プロジェクトでは、元データと正規化されたデータを分離して管理しています。
-
-```text
-外部データ
-   ↓
-Raw
-   ↓
-Parsing
-   ↓
-Normalization
-   ↓
-Master / Service
-```
-
-この構成により、取得時の元データを追跡できるようにし、  
-正規化ルールを変更した場合でも、元データをもとに再処理できる構造を目指しています。
-
-## 🚀 拡張性
-
-現在は渋谷区を対象として開発していますが、  
-特定の自治体に依存しないデータ構造を目指しています。
-
-将来的には、
-
-```text
-渋谷区
-新宿区
-港区
-世田谷区
-...
-```
-
-のように、他の自治体のデータを追加できるよう、  
-Source、Mapping Rule、Field Mapping、Areaなどの構造を分離して設計しています。
-
-## 📁 Project Status
-
-現在、以下の機能を中心に開発しています。
-
-- [x] Rawデータ保存構造
-- [x] Source / Document管理
-- [x] Import Batch管理
-- [x] Raw Record保存
-- [x] Field Mapping
-- [x] Value Mapping
-- [x] Waste Category構築
-- [x] Areaデータ構築
-- [x] Disposal Rule構築
-- [x] JPA / HibernateによるDB連携
-- [ ] 複数データソースへのParser拡張
-- [ ] データ変更検知・検証
-- [ ] サービスAPI構築
-- [ ] ユーザー住所によるごみ情報検索
-- [ ] 他自治体へのデータ拡張
-
-## 🎯 最終目標
-
-「収集 → Parsing → Raw保存 → 正規化 → 検証 → サービスデータ生成」
-
-という一連のデータパイプラインを構築し、
-
-ユーザーが自分の地域に合わせて、
-
-- ごみの種類
-- 分別方法
-- 収集曜日
-- 収集地域
-- 排出ルール
-- 粗大ごみ情報
-
-などを簡単に確認できる **「ごみの百科事典」** サービスの実現を目指します。
+- [x] Rocky Linux 8.9上でのPostgreSQLサーバー構築および運用
+- [x] `pg_hba.conf`およびネットワークポートのバインド設計
+- [x] Raw/Normalization/Master/Service 4層スキーマの確立
+- [x] JsoupおよびJPAによるデータ取り込み・変換パイプラインの実装
+- [ ] **DBマイグレーション**: `pg_dump`を用いたスキーマ・データのAWS RDS (PostgreSQL) への移行
+- [ ] **ネットワーク分離**: AWS VPC内のPrivate SubnetにRDSを配置し、EC2/ECSからのみアクセス可能とするセキュリティグループ設計
+- [ ] **自動化**: データ更新バッチのEventBridge + ECSタスク化
